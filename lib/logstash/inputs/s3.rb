@@ -148,7 +148,7 @@ class LogStash::Inputs::S3 < LogStash::Inputs::Base
           @logger.debug('Ignoring', :key => log.key)
         elsif log.content_length <= 0
           @logger.debug('Object Zero Length', :key => log.key)
-        elsif log.last_modified <= sincedb_time
+        elsif log.last_modified.to_f <= sincedb_time.to_f 
           @logger.debug('Object Not Modified', :key => log.key)
         elsif log.last_modified > (current_time - CUTOFF_SECOND).utc # file modified within last two seconds will be processed in next cycle
           @logger.debug('Object Modified After Cutoff Time', :key => log.key)
@@ -169,7 +169,7 @@ class LogStash::Inputs::S3 < LogStash::Inputs::Base
   def backup_to_bucket(object)
     unless @backup_to_bucket.nil?
       backup_key = "#{@backup_add_prefix}#{object.key}"
-      @backup_bucket.object(backup_key).copy_from(:copy_source => "#{object.bucket_name}/#{object.key}")
+      @s3bucket.object(object.key).copy_to("#{@backup_to_bucket}/#{backup_key}")
       if @delete
         object.delete()
       end
@@ -328,12 +328,12 @@ class LogStash::Inputs::S3 < LogStash::Inputs::Base
 
   def sincedb
     @sincedb ||= if @sincedb_path.nil?
-                    @logger.info("Using default generated file for the sincedb", :filename => sincedb_file)
-                    SinceDB::File.new(sincedb_file)
-                  else
-                    @logger.info("Using the provided sincedb_path", :sincedb_path => @sincedb_path)
-                    SinceDB::File.new(@sincedb_path)
-                  end
+      @logger.info("Using default generated file for the sincedb", :filename => sincedb_file)
+      SinceDB::File.new(sincedb_file)
+    else
+      @logger.info("Using the provided sincedb_path", :sincedb_path => @sincedb_path)
+      SinceDB::File.new(@sincedb_path)
+    end
   end
 
   def sincedb_file
@@ -380,15 +380,11 @@ class LogStash::Inputs::S3 < LogStash::Inputs::Base
     filename = File.join(temporary_directory, File.basename(log.key))
     if download_remote_file(object, filename)
       if process_local_log(queue, filename, object)
-        if object.last_modified == log.last_modified
           backup_to_bucket(object)
           backup_to_dir(filename)
           delete_file_from_bucket(object)
           FileUtils.remove_entry_secure(filename, true)
           sincedb.write(log.last_modified)
-        else
-          @logger.info("#{log.key} is updated at #{object.last_modified} and will process in the next cycle")
-        end
       end
     else
       FileUtils.remove_entry_secure(filename, true)
@@ -454,7 +450,8 @@ class LogStash::Inputs::S3 < LogStash::Inputs::Base
         if ::File.exists?(@sincedb_path)
           content = ::File.read(@sincedb_path).chomp.strip
           # If the file was created but we didn't have the time to write to it
-          return content.empty? ? Time.new(0) : Time.parse(content)
+          # return content.empty? ? Time.new(0) : Time.parse(content)
+          return content.empty? ? Time.new(0) : Time.at(content.to_f)
         else
           return Time.new(0)
         end
@@ -462,7 +459,7 @@ class LogStash::Inputs::S3 < LogStash::Inputs::Base
 
       def write(since = nil)
         since = Time.now if since.nil?
-        ::File.open(@sincedb_path, 'w') { |file| file.write(since.to_s) }
+        ::File.open(@sincedb_path, 'w') { |file| file.write((since.to_f).to_s) }
       end
     end
   end
